@@ -433,3 +433,7 @@ async def main():
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
+
+def cli_entry():
+    import asyncio
+    asyncio.run(main())
