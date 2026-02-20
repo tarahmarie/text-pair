@@ -65,6 +65,29 @@ PATCH
 }
 
 # =============================================================================
+# PATCH BANALITY FINDER WC WHITESPACE (macOS compatibility)
+# =============================================================================
+patch_banality_finder() {
+    echo "Patching banality_finder.py for macOS wc whitespace..."
+    
+    local banality_file="lib/textpair/sequence_alignment/banality_finder.py"
+    
+    if [ -f "$banality_file" ]; then
+        if grep -q '\.strip()\.split' "$banality_file"; then
+            echo "  Already patched"
+        else
+            # macOS wc outputs leading whitespace; .split() alone chokes on it
+            sed -i '' 's/\.stdout\.split/\.stdout\.strip()\.split/g' "$banality_file"
+            echo "  Patched: added .strip() before .split() on wc output"
+        fi
+    else
+        echo -e "${YELLOW}  banality_finder.py not found at expected path${NC}"
+    fi
+    
+    echo ""
+}
+
+# =============================================================================
 # ARCHITECTURE CHECK
 # =============================================================================
 check_architecture() {
@@ -264,6 +287,7 @@ main() {
     patch_async_entry
     install_textpair
     patch_philologic_wc
+    patch_banality_finder
     install_binary
     verify_install
 }
