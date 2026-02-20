@@ -1,184 +1,271 @@
 #!/bin/bash
-#===============================================================================
-# TextPAIR Minimal Install Script
-# For macOS (Apple Silicon M1/M2/M3/M4 and Intel)
-#
-# This script installs TextPAIR WITHOUT the web app, PostgreSQL, or Apache.
-# Designed for running sequence alignments locally and outputting
-# alignments.jsonl for downstream analysis.
-#
-# Source: https://github.com/tarahmarie/text-pair (mac-bare-metal branch)
-# Forked from: https://github.com/ARTFL-Project/text-pair
-#
-# Prerequisites:
-#   - macOS with Python 3.11+ installed
-#   - Git
-#
-# Usage:
-#   1. Clone: git clone -b mac-bare-metal https://github.com/tarahmarie/text-pair
-#   2. cd text-pair
-#   3. Run: ./install.sh
-#
-# Note: Uses --break-system-packages to install globally without virtualenv.
-#===============================================================================
+# TextPAIR Mac Bare-Metal Install Script
+# For use without Docker, without web app
+# Forked from ARTFL-Project/text-pair
+# 
+# Usage: ./install-mac.sh
 
 set -e
 
-echo "=== TextPAIR Minimal Install for macOS (No Web App) ==="
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}TextPAIR Mac Bare-Metal Installer${NC}"
+echo "=================================="
 echo ""
 
-#-------------------------------------------------------------------------------
-# Check we're on macOS
-#-------------------------------------------------------------------------------
-if [[ "$(uname)" != "Darwin" ]]; then
-    echo "Warning: This script is written for macOS."
-    echo "Linux users will need to adjust commands."
-fi
+# =============================================================================
+# PATCH PHILOLOGIC WC -L (macOS compatibility)
+# =============================================================================
+patch_philologic_wc() {
+    echo "Patching PhiloLogic line_count.py for macOS..."
+    
+    # Find the philologic installation
+    local philologic_path=$(python3 -c "import philologic; print(philologic.__path__[0])" 2>/dev/null)
+    
+    if [ -z "$philologic_path" ]; then
+        echo -e "${YELLOW}  PhiloLogic not yet installed, will patch after pip install${NC}"
+        return 0
+    fi
+    
+    local line_count_file="${philologic_path}/utils/line_count.py"
+    
+    if [ -f "$line_count_file" ]; then
+        # Check if already patched
+        if grep -q 'wc -l < {file_path}' "$line_count_file"; then
+            echo "  Already patched"
+        else
+            # Rewrite the entire file - the upstream non-lz4 branch is broken
+            # (runs cut on empty stdin instead of wc -l on the file)
+            cat > /tmp/_line_count_patch.py << 'PATCH'
+#!/usr/bin/env python3
+"""Count number of lines in a file using subprocess module."""
+import subprocess
+def count_lines(file_path, lz4=False):
+    """Count number of lines in a file."""
+    if lz4:
+        cmd = f"lz4 -dc {file_path} | wc -l"
+    else:
+        cmd = f"wc -l < {file_path}"
+    process = subprocess.run(cmd, shell=True, text=True, capture_output=True)
+    count = int(process.stdout.strip())
+    return count
+PATCH
+            sudo cp /tmp/_line_count_patch.py "$line_count_file"
+            rm /tmp/_line_count_patch.py
+            echo "  Patched: rewrote line_count.py (upstream non-lz4 branch was broken)"
+        fi
+    else
+        echo -e "${YELLOW}  line_count.py not found at expected path${NC}"
+    fi
+    
+    echo ""
+}
 
-#-------------------------------------------------------------------------------
-# Check architecture (Apple Silicon vs Intel)
-#-------------------------------------------------------------------------------
-ARCH=$(uname -m)
-echo "Detected architecture: $ARCH"
+# =============================================================================
+# ARCHITECTURE CHECK
+# =============================================================================
+check_architecture() {
+    local arch=$(uname -m)
+    echo "Checking architecture..."
+    echo "  Detected: $arch"
+    
+    if [ "$arch" == "arm64" ]; then
+        BINARY_ARCH="aarch64"
+        echo "  Binary:   aarch64 (Apple Silicon)"
+    elif [ "$arch" == "x86_64" ]; then
+        BINARY_ARCH="x86_64"
+        echo "  Binary:   x86_64 (Intel)"
+    else
+        echo -e "${RED}Unsupported architecture: $arch${NC}"
+        exit 1
+    fi
+    echo ""
+}
 
-if [ "$ARCH" = "arm64" ]; then
-    BINARY_ARCH="aarch64"
-    echo "  -> Using ARM64/aarch64 binary (Apple Silicon)"
-elif [ "$ARCH" = "x86_64" ]; then
-    BINARY_ARCH="x86_64"
-    echo "  -> Using x86_64 binary (Intel Mac)"
-else
-    echo "Error: Unknown architecture $ARCH"
-    exit 1
-fi
+# =============================================================================
+# DEPENDENCY CHECK
+# =============================================================================
+check_dependencies() {
+    echo "Checking dependencies..."
+    
+    # Python 3.11+
+    if command -v python3 &> /dev/null; then
+        local py_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+        echo "  Python: $py_version"
+        if [[ $(echo "$py_version < 3.11" | bc -l) -eq 1 ]]; then
+            echo -e "${RED}  ERROR: Python 3.11+ required${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${RED}  ERROR: Python 3 not found${NC}"
+        exit 1
+    fi
+    
+    # ripgrep (optional but recommended)
+    if command -v rg &> /dev/null; then
+        echo "  ripgrep: $(rg --version | head -1)"
+    else
+        echo -e "${YELLOW}  ripgrep: not found (optional, install with: brew install ripgrep)${NC}"
+    fi
+    
+    echo ""
+}
 
-#-------------------------------------------------------------------------------
-# Check we're in the text-pair directory
-#-------------------------------------------------------------------------------
-if [ ! -f "lib/pyproject.toml" ]; then
-    echo "Error: lib/pyproject.toml not found."
-    echo "Make sure you're in the text-pair repository root directory."
-    exit 1
-fi
+# =============================================================================
+# PATCH PYPROJECT.TOML
+# =============================================================================
+patch_pyproject() {
+    echo "Patching lib/pyproject.toml..."
+    
+    # Replace psycopg2 with psycopg2-binary (avoids pg_config requirement)
+    if grep -q '"psycopg2"' lib/pyproject.toml; then
+        sed -i '' 's/"psycopg2"/"psycopg2-binary"/g' lib/pyproject.toml
+        echo "  Replaced psycopg2 -> psycopg2-binary"
+    fi
+    
+    echo ""
+}
 
-#-------------------------------------------------------------------------------
-# Check for required patches (should already be applied on mac-bare-metal branch)
-#-------------------------------------------------------------------------------
-echo ""
-echo "=== Verifying patches ==="
-
-if grep -q "psycopg2-binary" lib/pyproject.toml; then
-    echo "  [OK] psycopg2-binary patch present"
-else
-    echo "  [APPLYING] psycopg2 -> psycopg2-binary"
-    sed -i '' 's/"psycopg2"/"psycopg2-binary"/' lib/pyproject.toml
-fi
-
-if grep -q "def cli_entry" lib/textpair/__main__.py; then
-    echo "  [OK] cli_entry() wrapper present"
-else
-    echo "  [APPLYING] Adding cli_entry() async wrapper"
-    cat >> lib/textpair/__main__.py << 'EOF'
+# =============================================================================
+# PATCH ASYNC ENTRY POINT + ULIMIT FIX
+# =============================================================================
+patch_async_entry() {
+    echo "Patching lib/textpair/__main__.py for async entry point + ulimit fix..."
+    
+    # Check if already patched
+    if grep -q "def cli_entry" lib/textpair/__main__.py; then
+        echo "  Already patched"
+    else
+        # Add async wrapper with ulimit fix at the end of the file
+        cat >> lib/textpair/__main__.py << 'EOF'
 
 def cli_entry():
-    """Wrapper to properly run the async main() function."""
+    """Synchronous entry point wrapper for async main()"""
     import asyncio
+    import resource
+    import sys
+    import os
+    
+    # macOS ulimit fix - PhiloLogic needs many file descriptors for large corpora
+    # 10240 handles corpora up to ~4000+ files comfortably (macOS default is 256)
+    if sys.platform == 'darwin':
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < 10240:
+            try:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (min(10240, hard), hard))
+            except ValueError:
+                pass  # silently fail if we can't increase
+    
+    # Warn about paths with spaces
+    for arg in sys.argv:
+        if arg.startswith('--config='):
+            config_path = arg.split('=', 1)[1]
+            if ' ' in os.path.abspath(config_path):
+                print("WARNING: Config path contains spaces. If you hit errors, copy corpus to /tmp/")
+        if arg.startswith('--output_path='):
+            out_path = arg.split('=', 1)[1]
+            if ' ' in os.path.abspath(out_path):
+                print("WARNING: Output path contains spaces. If you hit errors, use a simple path like /tmp/")
+    
     asyncio.run(main())
 EOF
-fi
-
-if grep -q "cli_entry" lib/pyproject.toml; then
-    echo "  [OK] Entry point uses cli_entry"
-else
-    echo "  [APPLYING] Updating entry point to cli_entry"
-    sed -i '' 's/textpair.__main__:main/textpair.__main__:cli_entry/' lib/pyproject.toml
-fi
-
-#-------------------------------------------------------------------------------
-# Install Python packages
-#-------------------------------------------------------------------------------
-echo ""
-echo "=== Installing Python packages ==="
-
-# Install textpair_llm first (local dependency)
-if [ -d "lib/textpair_llm" ]; then
-    echo "Installing textpair_llm..."
-    pip3 install -e lib/textpair_llm/. --break-system-packages
-fi
-
-# Install main textpair library
-echo ""
-echo "Installing textpair (this downloads ~100MB of dependencies)..."
-pip3 install -e lib/. --break-system-packages
-
-#-------------------------------------------------------------------------------
-# Install compareNgrams binary
-#-------------------------------------------------------------------------------
-echo ""
-echo "=== Installing compareNgrams binary ==="
-
-BINARY_PATH="lib/core/binary/${BINARY_ARCH}/compareNgrams"
-
-if [ -f "$BINARY_PATH" ]; then
-    if [ -f "/usr/local/bin/compareNgrams" ]; then
-        echo "  compareNgrams already installed"
-    else
-        echo "  Installing to /usr/local/bin/ (requires sudo)..."
-        sudo cp "$BINARY_PATH" /usr/local/bin/
-        sudo chmod +x /usr/local/bin/compareNgrams
+        echo "  Added cli_entry() wrapper with ulimit fix and path warnings"
+        
+        # Update pyproject.toml entry point
+        sed -i '' 's/textpair.__main__:main/textpair.__main__:cli_entry/g' lib/pyproject.toml
+        echo "  Updated entry point in pyproject.toml"
     fi
-else
-    echo "Error: Binary not found at $BINARY_PATH"
-    exit 1
-fi
-
-#-------------------------------------------------------------------------------
-# Test installation
-#-------------------------------------------------------------------------------
-echo ""
-echo "=== Testing installation ==="
-echo "Running: python3 -m textpair --help"
-echo ""
-echo "NOTE: First run takes 1-2 minutes while spacy/torch models load."
-echo "      This is normal - do not interrupt it."
-echo ""
-
-if python3 -m textpair --help > /dev/null 2>&1; then
-    echo "[SUCCESS] textpair is working!"
-else
+    
     echo ""
-    echo "Testing with visible output..."
-    python3 -m textpair --help
-fi
+}
 
-echo ""
-echo "==============================================================================="
-echo "INSTALLATION COMPLETE"
-echo "==============================================================================="
-echo ""
-echo "Your fork: https://github.com/tarahmarie/text-pair"
-echo "Branch: mac-bare-metal"
-echo ""
-echo "To run an alignment:"
-echo ""
-echo "  1. Edit config/config.ini:"
-echo "     - source_file_path = /absolute/path/to/your/TEI/files"
-echo "     - target_file_path = (leave empty to compare source against itself)"
-echo "     - language = english"
-echo ""
-echo "  2. Run:"
-echo "     python3 -m textpair --config=config/config.ini \\"
-echo "                        --skip_web_app \\"
-echo "                        --output_path=/tmp/textpair-out \\"
-echo "                        --workers=4 \\"
-echo "                        my_alignment"
-echo ""
-echo "  3. Results will be in:"
-echo "     /tmp/textpair-out/my_alignment/results/alignments.jsonl"
-echo ""
-echo "TIPS:"
-echo "  - Use ABSOLUTE paths in config.ini"
-echo "  - First run is slow (spacy model loading)"
-echo "  - Delete output dir between runs to avoid 'File exists' errors"
-echo "  - The --skip_web_app flag is required (no PostgreSQL)"
-echo ""
+# =============================================================================
+# INSTALL
+# =============================================================================
+install_textpair() {
+    echo "Installing TextPAIR..."
+    
+    # Install textpair_llm first (local dependency)
+    if [ -d "lib/textpair_llm" ]; then
+        echo "  Installing textpair_llm..."
+        pip install -e lib/textpair_llm/. --break-system-packages --quiet
+    fi
+    
+    # Install main package
+    echo "  Installing textpair..."
+    pip install -e lib/. --break-system-packages
+    
+    echo ""
+}
+
+# =============================================================================
+# INSTALL BINARY
+# =============================================================================
+install_binary() {
+    echo "Installing compareNgrams binary..."
+    
+    local binary_path="lib/core/binary/${BINARY_ARCH}/compareNgrams"
+    
+    if [ -f "$binary_path" ]; then
+        sudo cp "$binary_path" /usr/local/bin/
+        sudo chmod +x /usr/local/bin/compareNgrams
+        echo "  Installed to /usr/local/bin/compareNgrams"
+    else
+        echo -e "${RED}  ERROR: Binary not found at $binary_path${NC}"
+        exit 1
+    fi
+    
+    echo ""
+}
+
+# =============================================================================
+# VERIFY
+# =============================================================================
+verify_install() {
+    echo "Verifying installation..."
+    
+    if command -v textpair &> /dev/null; then
+        echo -e "${GREEN}  textpair command found${NC}"
+    else
+        echo -e "${RED}  ERROR: textpair command not found${NC}"
+        exit 1
+    fi
+    
+    if command -v compareNgrams &> /dev/null; then
+        echo -e "${GREEN}  compareNgrams binary found${NC}"
+    else
+        echo -e "${RED}  ERROR: compareNgrams binary not found${NC}"
+        exit 1
+    fi
+    
+    echo ""
+    echo -e "${GREEN}Installation complete!${NC}"
+    echo ""
+    echo "Usage:"
+    echo "  textpair --config=config/config.ini --skip_web_app --output_path=/tmp/textpair-out --workers=4 alignment_name"
+    echo ""
+    echo "Notes:"
+    echo "  - ulimit is automatically increased on macOS (no manual fix needed)"
+    echo "  - Use absolute paths in config.ini for source_file_path"
+    echo "  - Avoid paths with spaces (copy corpus to /tmp if on iCloud)"
+    echo "  - Input files should be TEI XML format"
+}
+
+# =============================================================================
+# MAIN
+# =============================================================================
+main() {
+    check_architecture
+    check_dependencies
+    patch_pyproject
+    patch_async_entry
+    install_textpair
+    patch_philologic_wc
+    install_binary
+    verify_install
+}
+
+main "$@"

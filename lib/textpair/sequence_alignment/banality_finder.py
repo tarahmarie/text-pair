@@ -57,7 +57,7 @@ def banality_auto_detect(
     """Detect banalities automatically based on frequent ngram over-representation"""
     # Count number of ngrams to keep
     output = subprocess.check_output(["wc", "-l", common_ngrams_file]).decode("utf-8")
-    total_ngrams = int(output.split(" ", maxsplit=1)[0])
+    total_ngrams = int(output.strip().split(" ", maxsplit=1)[0])
     top_ngrams = floor(total_ngrams * proportion / 100)
 
     common_ngrams = set()
