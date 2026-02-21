@@ -10734,3 +10734,10 @@ web-app/appConfig.json
 web-app/stats.json
 appConfig.json
 banality_finder.py.lprof
+
+# macOS
+.DS_Store
+
+# Backup files
+*.bak
+in-and-out/

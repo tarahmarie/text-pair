@@ -1,190 +1,295 @@
 #!/bin/bash
+# TextPAIR Mac Bare-Metal Install Script
+# For use without Docker, without web app
+# Forked from ARTFL-Project/text-pair
+# 
+# Usage: ./install-mac.sh
 
-# Default values
-PYTHON_VERSION="python3"
-USE_CUDA=false
+set -e
 
-# Parse command line arguments
-while getopts "p:c" opt; do
-  case $opt in
-    p) PYTHON_VERSION="$OPTARG"
-    ;;
-    c) USE_CUDA=true
-    ;;
-    *) echo "Usage: $0 [-p python_version] [-c]"
-       echo "  -p: Specify Python version (default: python3)"
-       echo "  -c: Install with CUDA support (default: CPU only)"
-       exit 1
-    ;;
-  esac
-done
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
 
-echo "Using Python version: $PYTHON_VERSION"
-if [ "$USE_CUDA" = true ]; then
-    echo "Installing with CUDA support"
-else
-    echo "Installing with CPU-only PyTorch"
-fi
+echo -e "${GREEN}TextPAIR Mac Bare-Metal Installer${NC}"
+echo "=================================="
+echo ""
 
-# Check if uv is installed, install if not
-if ! command -v uv &> /dev/null; then
-    echo "uv could not be found. Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    # Add uv to PATH for current session
-    export PATH="$HOME/.local/bin:$PATH"
-    # Verify installation
-    if ! command -v uv &> /dev/null; then
-        echo "ERROR: Failed to install uv. Please install uv manually and try again."
-        echo "Visit https://docs.astral.sh/uv/getting-started/installation/ for installation instructions."
-        exit 1
-    else
-        echo "uv installed successfully"
+# =============================================================================
+# PATCH PHILOLOGIC WC -L (macOS compatibility)
+# =============================================================================
+patch_philologic_wc() {
+    echo "Patching PhiloLogic line_count.py for macOS..."
+    
+    # Find the philologic installation
+    local philologic_path=$(python3 -c "import philologic; print(philologic.__path__[0])" 2>/dev/null)
+    
+    if [ -z "$philologic_path" ]; then
+        echo -e "${YELLOW}  PhiloLogic not yet installed, will patch after pip install${NC}"
+        return 0
     fi
-else
-    echo "uv is already installed"
-fi
-
-# Delete virtual environment if it already exists
-if [ -d /var/lib/text-pair/textpair_env ]; then
-    echo "Deleting existing TextPAIR installation..."
-    sudo rm -rf /var/lib/text-pair/textpair_env
-fi
-
-
-# Give current user permission to write to /var/lib/textpair
-sudo mkdir -p /var/lib/text-pair
-sudo chown -R $USER:$USER /var/lib/text-pair
-
-# Create the virtual environment using uv
-echo "Creating virtual environment with uv..."
-uv venv -p $PYTHON_VERSION /var/lib/text-pair/textpair_env
-source /var/lib/text-pair/textpair_env/bin/activate
-
-# Install textpair and textpair_llm together
-if [ "$USE_CUDA" = true ]; then
-    echo "Installing textpair with CUDA support..."
-    uv pip install -e lib/.[cuda]
-else
-    echo "Installing textpair with CPU-only PyTorch..."
-    uv pip install -e lib/.[cpu]
-fi
-
-deactivate
-
-# Create separate virtual environment for graph building
-echo ""
-echo "Creating separate virtual environment for graph building..."
-if [ -d /var/lib/text-pair/graph ]; then
-    echo "Deleting existing graph environment..."
-    rm -rf /var/lib/text-pair/graph
-fi
-
-uv venv -p $PYTHON_VERSION /var/lib/text-pair/graph
-source /var/lib/text-pair/graph/bin/activate
-
-
-# Install textpair_graph and textpair_llm together
-echo "Installing textpair_graph..."
-if [ "$USE_CUDA" = true ]; then
-    echo "Installing with GPU acceleration (cuML)..."
-    uv pip install -e lib/textpair_graph[cuda] || {
-        echo "WARNING: Failed to install CUDA graph libraries. Falling back to CPU alternatives..."
-        uv pip install -e lib/textpair_graph
-    }
-else
-    echo "Installing CPU-only graph dependencies..."
-    uv pip install -e lib/textpair_graph
-fi
-
-deactivate
-echo "Graph building environment created at /var/lib/text-pair/graph"
-
-# Install the textpair script
-sudo cp textpair /usr/local/bin/
-
-# Install compareNgrams binary
-arch=$(uname -m)
-if [ "$arch" = "x86_64" ]; then
-    binary_path="lib/core/binary/x86_64/compareNgrams"
-elif [ "$arch" = "aarch64" ]; then
-    binary_path="lib/core/binary/aarch64/compareNgrams"
-else
-    echo "Only x86_64 and ARM are supported at this time."
-    exit 1
-fi
-sudo rm -f /usr/local/bin/compareNgrams
-sudo cp "$binary_path" /usr/local/bin/compareNgrams
-sudo chmod +x /usr/local/bin/compareNgrams
-
-
-# Install the web application components
-echo -e "\nMoving web application components into place..."
-sudo mkdir -p /var/lib/text-pair
-if [ ! -f /var/lib/text-pair/api_server/web_server.sh ]
-    then
-        sudo cp -Rf api_server /var/lib/text-pair/api_server/
-else
-    echo "/var/lib/text-pair/api_server/web_server.sh already exists, not modifying..."
-fi
-
-if [ -d web/web_app/node_modules ]
-    then
-        sudo rm -rf web/web_app/node_modules
-fi
-sudo cp -Rf api /var/lib/text-pair/
-sudo cp -Rf web-app /var/lib/text-pair/
-sudo cp -Rf config /var/lib/text-pair/
-
-echo -e "\nMoving global configuration into place..."
-sudo mkdir -p /etc/text-pair
-if [ ! -f /etc/text-pair/global_settings.ini ]
-    then
-        sudo touch /etc/text-pair/global_settings.ini
-        echo "[WEB_APP]" | sudo tee -a /etc/text-pair/global_settings.ini > /dev/null
-        echo "api_server = http://localhost/text-pair-api" | sudo tee -a /etc/text-pair/global_settings.ini > /dev/null
-        echo "web_app_path =" | sudo tee -a /etc/text-pair/global_settings.ini > /dev/null
-        echo "[DATABASE]" | sudo tee -a /etc/text-pair/global_settings.ini > /dev/null
-        echo "database_name =" | sudo tee -a /etc/text-pair/global_settings.ini > /dev/null
-        echo "database_user =" | sudo tee -a /etc/text-pair/global_settings.ini > /dev/null
-        echo "database_password =" | sudo tee -a /etc/text-pair/global_settings.ini > /dev/null
-        echo "Make sure you create a PostgreSQL database with a user with read/write access to that database and configure /etc/text-pair/global_settings.ini accordingly."
-else
-    echo "/etc/text-pair/global_settings.ini already exists, not modifying..."
-fi
-
-# Check if pgvector extension is available in PostgreSQL
-echo ""
-echo "Checking for pgvector extension in PostgreSQL..."
-if [ -f /usr/share/postgresql/*/extension/vector.control ] || [ -f /usr/local/share/postgresql/*/extension/vector.control ]; then
-    echo "✓ pgvector extension found in PostgreSQL"
+    
+    local line_count_file="${philologic_path}/utils/line_count.py"
+    
+    if [ -f "$line_count_file" ]; then
+        # Check if already patched
+        if grep -q 'wc -l < {file_path}' "$line_count_file"; then
+            echo "  Already patched"
+        else
+            # Rewrite the entire file - the upstream non-lz4 branch is broken
+            # (runs cut on empty stdin instead of wc -l on the file)
+            cat > /tmp/_line_count_patch.py << 'PATCH'
+#!/usr/bin/env python3
+"""Count number of lines in a file using subprocess module."""
+import subprocess
+def count_lines(file_path, lz4=False):
+    """Count number of lines in a file."""
+    if lz4:
+        cmd = f"lz4 -dc {file_path} | wc -l"
+    else:
+        cmd = f"wc -l < {file_path}"
+    process = subprocess.run(cmd, shell=True, text=True, capture_output=True)
+    count = int(process.stdout.strip())
+    return count
+PATCH
+            sudo cp /tmp/_line_count_patch.py "$line_count_file"
+            rm /tmp/_line_count_patch.py
+            echo "  Patched: rewrote line_count.py (upstream non-lz4 branch was broken)"
+        fi
+    else
+        echo -e "${YELLOW}  line_count.py not found at expected path${NC}"
+    fi
+    
     echo ""
-    echo "IMPORTANT: Before using TextPAIR, you must enable the vector extension in your database."
-    echo "As a PostgreSQL superuser, run:"
-    echo "  psql -d your_textpair_database -c 'CREATE EXTENSION IF NOT EXISTS vector;'"
-else
-    echo ""
-    echo "ERROR: pgvector extension not found!"
-    echo "TextPAIR requires the pgvector extension for PostgreSQL."
-    echo ""
-    echo "To install pgvector:"
-    echo "  See https://github.com/pgvector/pgvector?tab=readme-ov-file#installation for installation instructions."
-    echo ""
-    echo "After installing pgvector, run this install script again."
-    echo ""
-    exit 1
-fi
+}
 
-echo -e "\n## INSTALLATION COMPLETE ##"
-echo "TextPAIR has been installed successfully using uv!"
-if [ "$USE_CUDA" = true ]; then
-    echo "- PyTorch was installed with CUDA support"
-else
-    echo "- PyTorch was installed with CPU-only support"
-    echo "- To install with CUDA support in the future, run: $0 -c"
-fi
-echo ""
-echo "## NEXT STEPS ##"
-echo "In order to start the TextPAIR web app, you need to configure and start up the web_server.sh script."
-echo "You can either:"
-echo "- Start it manually at /var/lib/text-pair/api_server/web_server.sh"
-echo "- Use the systemd init script located at /var/lib/text-pair/api_server/textpair.service: for this you will need to copy it to your OS systemd folder (usually /etc/systemd/system/) and run 'systemctl enable textpair && systemctl start textpair' as root"
+# =============================================================================
+# PATCH BANALITY FINDER WC WHITESPACE (macOS compatibility)
+# =============================================================================
+patch_banality_finder() {
+    echo "Patching banality_finder.py for macOS wc whitespace..."
+    
+    local banality_file="lib/textpair/sequence_alignment/banality_finder.py"
+    
+    if [ -f "$banality_file" ]; then
+        if grep -q '\.strip()\.split' "$banality_file"; then
+            echo "  Already patched"
+        else
+            # macOS wc outputs leading whitespace; .split() alone chokes on it
+            sed -i '' 's/\.stdout\.split/\.stdout\.strip()\.split/g' "$banality_file"
+            echo "  Patched: added .strip() before .split() on wc output"
+        fi
+    else
+        echo -e "${YELLOW}  banality_finder.py not found at expected path${NC}"
+    fi
+    
+    echo ""
+}
+
+# =============================================================================
+# ARCHITECTURE CHECK
+# =============================================================================
+check_architecture() {
+    local arch=$(uname -m)
+    echo "Checking architecture..."
+    echo "  Detected: $arch"
+    
+    if [ "$arch" == "arm64" ]; then
+        BINARY_ARCH="aarch64"
+        echo "  Binary:   aarch64 (Apple Silicon)"
+    elif [ "$arch" == "x86_64" ]; then
+        BINARY_ARCH="x86_64"
+        echo "  Binary:   x86_64 (Intel)"
+    else
+        echo -e "${RED}Unsupported architecture: $arch${NC}"
+        exit 1
+    fi
+    echo ""
+}
+
+# =============================================================================
+# DEPENDENCY CHECK
+# =============================================================================
+check_dependencies() {
+    echo "Checking dependencies..."
+    
+    # Python 3.11+
+    if command -v python3 &> /dev/null; then
+        local py_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+        echo "  Python: $py_version"
+        if [[ $(echo "$py_version < 3.11" | bc -l) -eq 1 ]]; then
+            echo -e "${RED}  ERROR: Python 3.11+ required${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${RED}  ERROR: Python 3 not found${NC}"
+        exit 1
+    fi
+    
+    # ripgrep (optional but recommended)
+    if command -v rg &> /dev/null; then
+        echo "  ripgrep: $(rg --version | head -1)"
+    else
+        echo -e "${YELLOW}  ripgrep: not found (optional, install with: brew install ripgrep)${NC}"
+    fi
+    
+    echo ""
+}
+
+# =============================================================================
+# PATCH PYPROJECT.TOML
+# =============================================================================
+patch_pyproject() {
+    echo "Patching lib/pyproject.toml..."
+    
+    # Replace psycopg2 with psycopg2-binary (avoids pg_config requirement)
+    if grep -q '"psycopg2"' lib/pyproject.toml; then
+        sed -i '' 's/"psycopg2"/"psycopg2-binary"/g' lib/pyproject.toml
+        echo "  Replaced psycopg2 -> psycopg2-binary"
+    fi
+    
+    echo ""
+}
+
+# =============================================================================
+# PATCH ASYNC ENTRY POINT + ULIMIT FIX
+# =============================================================================
+patch_async_entry() {
+    echo "Patching lib/textpair/__main__.py for async entry point + ulimit fix..."
+    
+    # Check if already patched
+    if grep -q "def cli_entry" lib/textpair/__main__.py; then
+        echo "  Already patched"
+    else
+        # Add async wrapper with ulimit fix at the end of the file
+        cat >> lib/textpair/__main__.py << 'EOF'
+
+def cli_entry():
+    """Synchronous entry point wrapper for async main()"""
+    import asyncio
+    import resource
+    import sys
+    import os
+    
+    # macOS ulimit fix - PhiloLogic needs many file descriptors for large corpora
+    # 10240 handles corpora up to ~4000+ files comfortably (macOS default is 256)
+    if sys.platform == 'darwin':
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < 10240:
+            try:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (min(10240, hard), hard))
+            except ValueError:
+                pass  # silently fail if we can't increase
+    
+    # Warn about paths with spaces
+    for arg in sys.argv:
+        if arg.startswith('--config='):
+            config_path = arg.split('=', 1)[1]
+            if ' ' in os.path.abspath(config_path):
+                print("WARNING: Config path contains spaces. If you hit errors, copy corpus to /tmp/")
+        if arg.startswith('--output_path='):
+            out_path = arg.split('=', 1)[1]
+            if ' ' in os.path.abspath(out_path):
+                print("WARNING: Output path contains spaces. If you hit errors, use a simple path like /tmp/")
+    
+    asyncio.run(main())
+EOF
+        echo "  Added cli_entry() wrapper with ulimit fix and path warnings"
+        
+        # Update pyproject.toml entry point
+        sed -i '' 's/textpair.__main__:main/textpair.__main__:cli_entry/g' lib/pyproject.toml
+        echo "  Updated entry point in pyproject.toml"
+    fi
+    
+    echo ""
+}
+
+# =============================================================================
+# INSTALL
+# =============================================================================
+install_textpair() {
+    echo "Installing TextPAIR..."
+    
+    # Install textpair_llm first (local dependency)
+    if [ -d "lib/textpair_llm" ]; then
+        echo "  Installing textpair_llm..."
+        pip install -e lib/textpair_llm/. --break-system-packages --quiet
+    fi
+    
+    # Install main package
+    echo "  Installing textpair..."
+    pip install -e lib/. --break-system-packages
+    
+    echo ""
+}
+
+# =============================================================================
+# INSTALL BINARY
+# =============================================================================
+install_binary() {
+    echo "Installing compareNgrams binary..."
+    
+    local binary_path="lib/core/binary/${BINARY_ARCH}/compareNgrams"
+    
+    if [ -f "$binary_path" ]; then
+        sudo cp "$binary_path" /usr/local/bin/
+        sudo chmod +x /usr/local/bin/compareNgrams
+        echo "  Installed to /usr/local/bin/compareNgrams"
+    else
+        echo -e "${RED}  ERROR: Binary not found at $binary_path${NC}"
+        exit 1
+    fi
+    
+    echo ""
+}
+
+# =============================================================================
+# VERIFY
+# =============================================================================
+verify_install() {
+    echo "Verifying installation..."
+    
+    if command -v textpair &> /dev/null; then
+        echo -e "${GREEN}  textpair command found${NC}"
+    else
+        echo -e "${RED}  ERROR: textpair command not found${NC}"
+        exit 1
+    fi
+    
+    if command -v compareNgrams &> /dev/null; then
+        echo -e "${GREEN}  compareNgrams binary found${NC}"
+    else
+        echo -e "${RED}  ERROR: compareNgrams binary not found${NC}"
+        exit 1
+    fi
+    
+    echo ""
+    echo -e "${GREEN}Installation complete!${NC}"
+    echo ""
+    echo "Usage:"
+    echo "  textpair --config=config/config.ini --skip_web_app --output_path=/tmp/textpair-out --workers=4 alignment_name"
+    echo ""
+    echo "Notes:"
+    echo "  - ulimit is automatically increased on macOS (no manual fix needed)"
+    echo "  - Use absolute paths in config.ini for source_file_path"
+    echo "  - Avoid paths with spaces (copy corpus to /tmp if on iCloud)"
+    echo "  - Input files should be TEI XML format"
+}
+
+# =============================================================================
+# MAIN
+# =============================================================================
+main() {
+    check_architecture
+    check_dependencies
+    patch_pyproject
+    patch_async_entry
+    install_textpair
+    patch_philologic_wc
+    patch_banality_finder
+    install_binary
+    verify_install
+}
+
+main "$@"
