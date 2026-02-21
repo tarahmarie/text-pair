@@ -436,4 +436,48 @@ if __name__ == "__main__":
 
 def cli_entry():
     import asyncio
-    asyncio.run(main())
+    import os
+    import platform
+    import resource
+    # macOS defaults to 256 open file descriptors, which is too low
+    # for PhiloLogic's sort/merge operations on large corpora.
+    original_soft = None
+    if platform.system() == "Darwin":
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < 4096:
+            new_soft = min(hard, 10240)
+            resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, hard))
+            original_soft = soft
+            print(f"[macOS] Raised open file limit: {soft} -> {new_soft}")
+    # Strip double .xml.xml extensions in source/target input directories
+    import configparser
+    import sys
+    config_file = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--config" and i + 1 < len(sys.argv):
+            config_file = sys.argv[i + 1]
+        elif arg.startswith("--config="):
+            config_file = arg.split("=", 1)[1]
+    if config_file:
+        cfg = configparser.ConfigParser()
+        cfg.read(config_file)
+        for section in ["TEXT_SOURCES", "SOURCE", "TARGET"]:
+            if cfg.has_option(section, "source_file_path"):
+                input_dir = cfg.get(section, "source_file_path")
+                if os.path.isdir(input_dir):
+                    fixed = 0
+                    for fname in os.listdir(input_dir):
+                        if fname.endswith(".xml.xml"):
+                            old_path = os.path.join(input_dir, fname)
+                            new_path = os.path.join(input_dir, fname[:-4])
+                            os.rename(old_path, new_path)
+                            fixed += 1
+                    if fixed:
+                        print(f"[pre-flight] Fixed {fixed} double .xml.xml extensions in {input_dir}")
+
+    try:
+        asyncio.run(main())
+    finally:
+        if original_soft is not None:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (original_soft, hard))
+            print(f"[macOS] Restored open file limit: {original_soft}")

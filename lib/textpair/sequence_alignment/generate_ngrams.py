@@ -146,6 +146,9 @@ class Ngrams:
         for k, v in text_object.metadata.items():
             if not isinstance(v, str):
                 text_object.metadata[k] = str(v)
+        if "philo_id" not in text_object.metadata:
+            print(f"WARNING: skipping text object with no philo_id: {list(text_object.metadata.keys())}", flush=True)
+            return {}
         text_object_id = "_".join(
             text_object.metadata["philo_id"].split()[: PHILO_TEXT_OBJECT_LEVELS[self.config["text_object_type"]]]
         )
