@@ -1,4 +1,6 @@
-"Nous ne faisons que nous entregloser" Montaigne wrote famously in his <i>Essais</i>... Since all we do is glose over what's already been written, we may as well build a tool to detect these intertextual relationships...
+"Nous ne faisons que nous entregloser" Montaigne wrote famously in his <i>Essais</i>... Since all we do is gloss over what's already been written, we may as well build a tool to detect these intertextual relationships...
+
+> **Note:** This is a personal fork of [ARTFL-Project/text-pair](https://github.com/ARTFL-Project/text-pair) maintained by Tarah Wheeler. It includes patches for running TextPAIR on macOS without Docker (see [macOS bare-metal installation](#macos-bare-metal-installation) below). For production use, you probably want the upstream repository. The `v1.0-thesis` tag marks the version used in Wheeler (2026), DPhil thesis, University of Oxford.
 
 # TextPAIR (Pairwise Alignment for Intertextual Relations)
 
@@ -29,6 +31,35 @@ The recommended install is to build your own Docker image and run TextPAIR insid
 
 If you do run into the issue where the web server does not respond, restart the web server with the following command:
 `/var/lib/text-pair/api_server/web_server.sh &`
+
+### macOS bare-metal installation
+
+This fork includes a `mac-bare-metal` branch with patches for running TextPAIR on macOS without Docker. The upstream project officially supports only 64-bit Linux; these patches make it possible to develop and run TextPAIR locally on a Mac, at the cost of leaving the supported configuration.
+
+Specific changes from upstream:
+
+-   `psycopg2-binary` (Mac wheel) instead of building `psycopg2` from source
+-   Async wrapper for `cli_entry` to handle macOS event-loop differences
+-   macOS `wc` whitespace patch for `banality_finder.py` (BSD `wc` formats output differently from GNU `wc`)
+-   `install.sh` adjustments for macOS package managers and paths
+-   `.gitignore` for corpus data, macOS artifacts, and backup files
+
+To use this branch:
+
+```console
+git clone https://github.com/tarahmarie/text-pair.git
+cd text-pair
+git checkout mac-bare-metal
+./install.sh
+```
+
+The `v1.0-thesis` tag on this branch marks the exact version used in Wheeler (2026), DPhil thesis, University of Oxford. Use it if you need to reproduce that work specifically:
+
+```console
+git checkout v1.0-thesis
+```
+
+For anything beyond personal or research use, the supported path remains Docker on Linux as documented above.
 
 ### Manual installation
 
